@@ -1,0 +1,14 @@
+# 运行产物：脚本会自动写入 hosts 备份与日志，不需要进仓库
+backup/
+logs/
+__pycache__/
+*.pyc
+
+# 本地临时文件
+*.bak
+_hosts_test*.txt
+_stub_args.txt
+_hosts_test.txt
+
+# 便携工具（本地下载，不入库）
+tools/
