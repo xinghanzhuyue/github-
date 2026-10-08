@@ -15,7 +15,7 @@
     diagnose  网络分层诊断，输出问题定位与建议
     hosts     更新 hosts 加速条目（需要管理员权限）
     proxy     配置 git 代理（自动探测端口，或 -ProxyUrl 指定）
-    mirror    镜像 URL 重写（只读加速，push 不可用）
+    mirror    镜像 URL 重写（只读加速；push 不可用，开启期间勿输入任何令牌）
     download  通过镜像下载 GitHub 文件 / release，配合 -DownloadUrl
     task      注册 / 卸载"每天自动更新 hosts"的计划任务（需要管理员权限）
     all       一键启用：hosts + proxy（能自动探测到才配）
@@ -219,7 +219,7 @@ GitHub 访问加速脚本  github-accel.ps1
   diagnose                  分层诊断：DNS 污染 / TCP 阻断 / TLS 干扰 / 代理缺失
   hosts                     更新 hosts 加速条目（需管理员）
   proxy                     配置 git 代理（自动探测本地端口）
-  mirror                    镜像 URL 重写（只读加速，push 不可用）
+  mirror                    镜像 URL 重写（只读加速；push 不可用，开启期间勿输入任何令牌）
   download                  通过镜像下载 GitHub 文件 / release
   task                      注册或卸载"每天自动更新 hosts"计划任务（需管理员）
   all                       一键启用 hosts + proxy
@@ -732,6 +732,8 @@ function Invoke-MirrorAction {
     Write-Ok "已启用镜像：$prefix"
     Write-Warn '注意：镜像只适合 clone / fetch / 下载，push 会失败。'
     Write-Warn '需要 push 的仓库请临时执行 -Action mirror -Off，或直接用代理方案。'
+    Write-Warn '⚠ 安全提醒：镜像状态下的 git 流量（含你输入的账号 / 令牌）会先经过第三方镜像服务器。'
+    Write-Warn '⚠  开启期间不要输入任何令牌（PAT / 密码）；要 push 或登录，先执行 -Action mirror -Off。'
     Write-Info '撤销：.\github-accel.ps1 -Action mirror -Off'
     $Script:Changed.Add("镜像重写 -> $prefix")
 }

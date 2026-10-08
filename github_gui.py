@@ -42,7 +42,7 @@ from tkinter import messagebox, ttk
 from typing import Dict, List, Optional, Sequence, Tuple
 
 APP_TITLE = "GitHub 加速控制台"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 HERE = Path(__file__).resolve().parent
 PY_SCRIPT = HERE / "github520.py"
 PS_SCRIPT = HERE / "github-accel.ps1"
@@ -560,7 +560,11 @@ def self_check_report() -> List[str]:
     lines.append(f"[OK] 默认浏览器：{dname or '未识别'}")
     if dexe:
         lines.append(f"-> 路径：{dexe}")
-    lines.append("-> 已安装：" + ("、".join(n for n, _ in browsers) if browsers else "未检测到"))
+    # 只说数量，不打印清单：输出/截图不会泄露你装了哪些软件（清单在左侧下拉框里）
+    if browsers:
+        lines.append(f"-> 已检测到 {len(browsers)} 个可用浏览器（清单见左侧「浏览器」下拉框）")
+    else:
+        lines.append("-> 未检测到可用浏览器，请手动指定浏览器路径")
     entries, gen, swapped = hosts_entries()
     if entries:
         lines.append(f"[OK] hosts 加速条目：{len(entries)} 条（生成于 {gen}）")
