@@ -102,6 +102,7 @@ $ErrorActionPreference = 'Continue'
 # ---------------------------------------------------------------- 全局常量 ---
 
 if ($PSScriptRoot) { $Script:Root = $PSScriptRoot } else { $Script:Root = (Get-Location).Path }
+$Script:Version = '1.0.0'
 $Script:BackupDir = Join-Path $Script:Root 'backup'
 $Script:LogDir = Join-Path $Script:Root 'logs'
 $Script:LogFile = Join-Path $Script:LogDir ('accel-{0}.log' -f (Get-Date -Format 'yyyyMMdd'))
@@ -208,9 +209,9 @@ function Write-Title {
 }
 
 function Write-Usage {
+    Write-Host ''
+    Write-Host "GitHub 访问加速脚本  github-accel.ps1  v$Script:Version" -ForegroundColor Cyan
     Write-Host @'
-GitHub 访问加速脚本  github-accel.ps1
-
 用法：
   .\github-accel.ps1 -Action <动作> [选项]
 
@@ -894,6 +895,7 @@ function Invoke-DiagnoseAction {
 
 function Invoke-StatusAction {
     Write-Title '当前状态'
+    Write-Info "脚本版本：github-accel.ps1 v$Script:Version（仓库统一版本号）"
 
     $entries = @(Get-HostsBlockEntries)
     if ($entries.Count -gt 0) { Write-Ok "hosts 加速条目：$($entries.Count) 条（由本脚本管理）" }

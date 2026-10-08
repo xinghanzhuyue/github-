@@ -42,7 +42,7 @@ from tkinter import messagebox, ttk
 from typing import Dict, List, Optional, Sequence, Tuple
 
 APP_TITLE = "GitHub 加速控制台"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.0.0"
 HERE = Path(__file__).resolve().parent
 PY_SCRIPT = HERE / "github520.py"
 PS_SCRIPT = HERE / "github-accel.ps1"
