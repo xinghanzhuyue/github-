@@ -1,6 +1,6 @@
 # GitHub 访问加速脚本（Windows）
 
-**当前版本：v1.0.0** —— 图形界面、Python 版、PowerShell 版统一使用这一个版本号。
+**当前版本：v1.1.0** —— 图形界面、Python 版、PowerShell 版统一使用这一个版本号。
 
 两套实现 + 一个图形界面，功能互补，共用同一个 hosts 标记块，可以混用：
 
@@ -12,14 +12,26 @@
 
 ```
 github_gui.py           图形界面（把下面两个脚本包成可勾选任务，实时显示输出）
-github520.py            Python 主脚本（check / update / watch / task / status / restore）
+github_gui.pyw          双击入口：无终端窗口打开图形界面
+启动界面.cmd            双击即用：自动找 Python 打开图形界面（没装 Python 会给指引）
+start-gui.ps1           启动界面.cmd 背后的 Python 探测与启动逻辑
+github520.py            Python 主脚本（check / update / watch / task / status / verify / restore）
 github-accel.ps1        PowerShell 主脚本（diagnose / hosts / proxy / mirror / task / all / off）
 run-admin.ps1           以管理员身份拉起 PS 主脚本的启动器（自动弹 UAC）
-一键更新hosts.cmd       双击即用：用 PS 版更新 hosts 加速条目
+一键更新hosts.cmd       双击即用：用 PS 版更新 hosts 加速条目（免 Python）
 screenshots\            界面截图
 backup\                 每次改动前的自动备份（hosts、git 配置）
 logs\                   运行日志（accel-*.log / github520-*.log）
 ```
+
+## 快速上手（30 秒定入口）
+
+| 你的情况 | 该做什么 |
+|---|---|
+| 不想装 Python，只想先让 GitHub 能打开 | 双击 **`一键更新hosts.cmd`**（PowerShell 版，免 Python） |
+| 想要图形界面（推荐） | 先装 Python 3.8+（安装时勾选 **Add python.exe to PATH**），然后双击 **`启动界面.cmd`** 或 `github_gui.pyw` |
+| 已装好 Python，习惯命令行 | `py -3 github520.py check` 体检 → `update --elevate` 更新 → `verify` 几秒验证生效 |
+| git 也要加速（clone 走代理、镜像下载） | PowerShell 版：`.\github-accel.ps1 -Action proxy` / `-Action download`（详见第三章） |
 
 ---
 
@@ -71,7 +83,8 @@ python github520.py task install           # ⑤ 可选：注册计划任务，�
 | `update` | 拉取 + 优选 + 写入 hosts | 是（写系统 hosts 时） |
 | `watch` | 常驻监控，按间隔自检并按需更新 | 是 |
 | `task install\|uninstall\|status` | 计划任务管理 | 是（status 不需要） |
-| `status` | 查看加速条目、备份、计划任务、数据源可达性 | 否 |
+| `status` | 查看加速条目、备份、计划任务、数据源可达性（hosts 未启用时退出码为 1） | 否 |
+| `verify` | 快速验证 hosts 是否生效：解析对比 + github.com 探测，几秒完成（退出码 0=生效 / 1=未生效 / 2=无条目） | 否 |
 | `restore [--list]` | 从备份还原 hosts | 是 |
 
 选项（`update` / `watch` 通用）：
@@ -122,11 +135,24 @@ schtasks /Create /TN GitHub520-HostsUpdate /SC HOURLY /MO 1 /RL HIGHEST /F ^
   谁后运行谁的内容生效，不会出现两份重复条目。
 - Python 版不认识 PS 版写的 `git config` / 镜像重写，那些仍然由 `github-accel.ps1` 管。
 
+### 常用操作对照表（两个 CLI 二选一）
+
+| 想做的事 | Python 版 | PowerShell 版 |
+|---|---|---|
+| 快速确认 hosts 生效（几秒） | `py -3 github520.py verify` | GUI 里点「验证解析结果」按钮 |
+| 查看状态 | `py -3 github520.py status` | `.\github-accel.ps1 -Action status` |
+| 更新 hosts | `py -3 github520.py update --elevate` | `.\github-accel.ps1 -Action hosts` |
+| 从备份还原 | `py -3 github520.py restore --elevate` | `.\github-accel.ps1 -Action hosts -Restore` |
+| git 走代理 | ——（在 PS 版） | `.\github-accel.ps1 -Action proxy` |
+| 镜像下载 release / 源码包 | ——（在 PS 版） | `.\github-accel.ps1 -Action download -DownloadUrl <url>` |
+| 定时自动更新 | `py -3 github520.py task install` | `.\github-accel.ps1 -Action task` |
+
+> 两个版本的计划任务名不同（`GitHub520-HostsUpdate` vs PS 版自己的任务名），同时注册
+> 也不会冲突，但没必要——选一个用就好。
+
 ## 1.6 踩过的坑（1.0.0 已修复）
 
-**hosts 的列顺序必须是「IP 域名」，写反等于整段失效。**
-
-`update --no-optimize`（GUI 里的「③ 更新 hosts（快速，不测速）」）曾经因为内部
+**hosts 的列顺序必须是「IP 域名」，写反等于整段失效。**`update --no-optimize`（GUI 里的「③ 更新 hosts（快速，不测速）」）曾经因为内部
 `parse_entries()` 的返回顺序与调用方解包顺序不一致，把标记块写成了 `github.com 20.205.243.166`
 这种「域名 IP」的形式。Windows 的 DNS 客户端只认「IP 域名」，这些行**整段被忽略**，
 于是 hosts 看着写进去了、实际一点作用都没有（在 `status` / `check` / hosts 标签页里都会看到告警）。
@@ -138,12 +164,23 @@ schtasks /Create /TN GitHub520-HostsUpdate /SC HOURLY /MO 1 /RL HIGHEST /F ^
 3. 解析器兼容并统计「写反了」的行数，`check` / `status` / GUI 的 hosts 页都会**整段标红**提示；
 4. GUI 新增「重启 DNS 客户端服务（让 hosts 立刻生效）」，hosts 改了不生效时先试它。
 
-> 若你的 hosts 里已经有写反的区块：以管理员身份跑一次 GUI 的「③ 更新 hosts（优选 IP）」
+> 若你的 hosts 里已经有写反的区块：以管理员身份跑一次 GUI 的「③ 更新 hosts（推荐，自动测速）」
 > （或 `py -3 github520.py update --elevate`）覆写即可，两个脚本都会整体替换该区块。
 
 写反时 GUI 的「当前 hosts」页会整段标红（下图为示例数据，用「域名 IP」顺序复现该告警）：
 
 ![列顺序写反时的告警](screenshots/hosts-order-error.png)
+
+**HTTP 校验曾把 4xx 当「通过」，导致 github.com 被写到 API 前端上（浏览器弹 400）。**
+
+`http_verify` 旧判定是 `status < 500`——而 `api.github.com` 的 Azure 前端对
+`github.com` 的请求一律回 **400 Bad Request**（TLS 握手能过，证书同属 `*.github.com`），
+于是它通过了 HTTP 校验被写进 hosts；监控的旧探测只做 TLS 握手，也发现不了。
+修复内容：
+
+1. `github.com` / `gist.github.com` 这类浏览器域名的 HTTP 校验强制 `status < 400`；
+2. 「仅 TLS 通过」兜底与「同族最优」继承对这两个域名同样要过 HTTP 闸，过不了就回退源 IP；
+3. GUI 监控探测升级为 TLS + 真实 GET 双层，报出来的「连接正常」等同于「页面能打开」。
 
 - 想回到最初状态：`python github520.py restore`（Python 版备份）或
   `.\github-accel.ps1 -Action hosts -Restore`（PS 版备份），两者备份文件互不干扰。
@@ -158,24 +195,38 @@ schtasks /Create /TN GitHub520-HostsUpdate /SC HOURLY /MO 1 /RL HIGHEST /F ^
 ## 2.1 启动
 
 ```powershell
-python github_gui.py        # 带控制台窗口
-pythonw github_gui.py       # 不带控制台窗口（推荐做成快捷方式）
+# 双击 启动界面.cmd：自动找 Python、用 pythonw 打开；没装 Python 会给出两条出路
+# 双击 github_gui.pyw 最省事：系统会用 pythonw 打开，全程不出现终端窗口
+pythonw github_gui.py         # 命令行启动的等价写法（无终端）
+python github_gui.py --flat   # 强制浅灰平面模式（连标题栏玻璃也不开）
+python github_gui.py --glass  # 整面亚克力玻璃（注意：留白处点击会穿透，见下）
 ```
 
 窗口尺寸会按屏幕自动调整并居中（小屏笔记本上不会被顶出屏幕）。
+双击 `github_gui.py` 也可以：程序检测到终端是专为本次启动创建的，会自动改用 pythonw
+重启自己（终端一闪而过）；从 cmd / PowerShell 里手动运行则保持原样（报错看得见），
+设环境变量 `GITHUB_GUI_NO_RELAUNCH=1` 可禁用该行为。
+以 pythonw 方式启动时若启动失败会弹窗报错；想看完整报错就用 `python github_gui.py` 启动。
 
 ## 2.2 界面构成
 
 | 区域 | 说明 |
 |---|---|
-| 顶部工具栏 | 运行选中 / 停止（连同子进程一起结束）/ 全选 / 全不选 / 常用组合 / 清空输出 / **一键直连 GitHub**；右侧是当前权限徽标与「提权重启」 |
+| 顶部工具栏 | **▶ 运行选中**（实心主色按钮）/ ■ 停止（运行时变红，连同子进程一起结束）/ 全选 / 全不选 / 常用组合 / 清空输出；右侧是权限徽标与「提权重启」。第二行为自定义命令 |
 | 自定义命令 | 输入任意 PowerShell 命令，回车即执行，输出同样进「运行输出」 |
-| 左侧任务清单 | 34 个任务，分四组：**浏览器直连**（6 个）、**Python 版 · github520.py**（13 个）、**PowerShell 版 · github-accel.ps1**（10 个）、**系统工具**（5 个）；每条都标注是否需要管理员（共 11 个需要） |
-| 运行输出 | 实时流式输出（Python 的 `print`、PowerShell 的 `Write-Host` 都能抓），按 `[OK]` 绿 / `[警告]` 黄 / `[错误]` 红 / `->` 灰 / `=====` 蓝着色；每次运行打印命令原文、退出码与耗时 |
+| 左侧任务清单 | 玻璃背景上的圆角卡片，36 个任务分四组（卡片标题旁有数量徽标，标题下有一行灰色说明告诉你这组是干嘛的、和另一组什么关系）：**浏览器直连**（7 个）、**Python 版 · github520.py**（14 个）、**PowerShell 版 · github-accel.ps1**（10 个）、**系统工具**（5 个）；每行悬停高亮，需要管理员的任务在行尾挂「管理员」小标签，脚本文件缺失时挂「脚本缺失」标签（共 11 个需要管理员） |
+| 运行输出 | 实时流式输出（Python 的 `print`、PowerShell 的 `Write-Host` 都能抓），深色终端按 `[OK]` 绿 / `[警告]` 黄 / `[错误]` 红 / `->` 灰 / `=====` 蓝着色；每次运行打印命令原文、退出码与耗时 |
 | 日志文件 | 直接浏览 `logs\` 下的 `accel-*.log`、`github520-*.log`，默认每 2 秒自动刷新 |
 | 当前 hosts | 解析 hosts 里的加速标记块，逐条列出 IP / 域名 / **实际解析结果**，一键「验证解析结果」会把命中/未命中标成绿/红；如果区块被写成了「域名 IP」顺序会整段标红告警 |
 | 帮助 | 推荐流程、权限说明、排错指引、一键直连原理 |
-| 底部状态栏 | 权限提示、计划任务是否已注册、上次运行结果 |
+| 底部状态栏 | 运行状态圆点（运行中会缓慢呼吸）、权限提示、计划任务是否已注册、上次运行结果 |
+
+界面质感（外观统一由文件头部「设计系统」一份参数控制）：
+
+- 配色克制：主色只有靛蓝一个，绿 / 黄 / 红只出现在「成功 / 警告 / 错误」语义上；正文用微软雅黑 UI，等宽内容（终端 / 日志 / hosts 表格）用 Consolas，全界面两种字体。
+- 外观分三档：**默认**在 Win11 上是「磨砂底色 + 亚克力标题栏（Mica）+ 系统级圆角窗口」，白色卡片浮在磨砂底上，客户区完全不透明，**随便点哪里都不会穿到别的窗口**；**`--glass`** 把亚克力铺满整个窗口，卡片之间的留白透出模糊桌面——但 Windows 分层窗口的色键区域点击会穿透到下层窗口（系统固有行为，无法规避），介意就不要开；**`--flat`** 全部关掉回到普通窗口。环境变量 `GITHUB_GUI_GLASS=1` / `GITHUB_GUI_FLAT=1` 等效。
+- 卡片圆角、间距、按钮样式全界面统一。
+- 动效只做反馈不抢戏：按钮悬停变色、按下文字下沉 1px、任务行悬停高亮、运行中状态栏圆点缓慢呼吸。
 
 ## 2.3 权限处理
 
@@ -191,7 +242,6 @@ pythonw github_gui.py       # 不带控制台窗口（推荐做成快捷方式�
 
 勾选要看的页面（首页 / 趋势 / 搜索 / Gist / raw 文件），点「▶ 一键打开并直连 GitHub」，
 浏览器会带着**优选 IP**打开这些页面。原理是启动浏览器时附加两个只为本次实例生效的参数：
-
 ```text
 msedge.exe --no-proxy-server ^
   "--host-resolver-rules=MAP github.com 20.205.243.166, MAP gist.github.com 37.61.54.158, … 共 40 条" ^
@@ -213,6 +263,14 @@ msedge.exe --no-proxy-server ^
   输出区会给黄色警告——想确保锁定生效，先完全退出该浏览器；
 - Firefox 不支持命令行锁定 IP，只能靠 hosts 生效，需要自己确认 DoH 已关；
 - 这些参数**不改注册表、不改 hosts**，关掉浏览器即失效，不影响日常使用。
+- 打开后默认进入**持续监控**（「⑥ 持续监控连接（每 30 秒）」，默认勾选）：每 30 秒对
+  github.com / api.github.com / raw.githubusercontent.com 做 TLS 探测——hosts 里有锁定 IP
+  就直接探测该 IP，与浏览器打开页面走的是同一条链路。正常时输出各域名延迟（绿色），
+  异常立即红色报警；**持续爆红（约 1.5 分钟）自动尝试修复**——已是管理员就直接在输出区
+  跑更新（全程可见），否则弹 UAC 在新管理员窗口更新（15 分钟冷却内不重复弹），
+  修复结果由监控继续探测验证，恢复后报告中断时长；状态同步显示在运行徽标与状态栏呼吸点上。
+  自动修复可用面板里的「监控爆红时自动修复」开关关闭；不需要监控时取消勾选「⑥」
+  或随时点「停止」。
 
 ## 2.5 界面截图
 
@@ -234,7 +292,8 @@ msedge.exe --no-proxy-server ^
 
 ## 2.6 已验证
 
-- 34 个任务全部构建成功，分组、是否需要管理员标注正确；
+- 36 个任务全部构建成功，分组、是否需要管理员标注正确（34 个为历史验证时的数量，
+  后新增「④ 快速验证 hosts 生效」和「⑥ 持续监控连接」）；
 - 真实执行任务并捕获输出：`ipconfig /flushdns` 输出 `Successfully flushed the DNS Resolver Cache.`，
   退出码 0；`github520.py task status` 的中文输出「GitHub520-HostsUpdate 未注册。」正确显示；
 - 权限拦截：勾选「需管理员」+「不需要管理员」各一个，未提权时弹窗询问一次，实际只运行了不需要管理员的那个；
@@ -250,6 +309,10 @@ msedge.exe --no-proxy-server ^
 
 一个脚本解决三类常见的 GitHub 连不上问题：**DNS 污染**、**缺少代理**、**下载慢/被墙**。
 所有改动都可预览、可备份、可一键还原。
+
+> **不要直接双击 `github-accel.ps1`**——Windows 对 .ps1 的默认动作是「编辑」，
+> 会用记事本打开它（这是正常行为，不是文件坏了）。想在图形界面里用终端：
+> 在资源管理器地址栏输入 `powershell` 回车，就会在当前目录打开一个 PowerShell 窗口。
 
 ---
 
@@ -437,6 +500,12 @@ git config --global url."<镜像前缀>https://github.com/".insteadOf "https://g
   **不保证长期有效**，也**不保证一定加速**（`github.com` 属于「能连但慢」，hosts 只能优选 IP，带宽问题需要代理）。
 - 脚本不采集、不上传任何数据，不连接除 GitHub / DoH / 镜像站以外的任何地址。
 - 请遵守 GitHub 服务条款与所在地区的法律法规，仅用于个人学习与网络排查，不要用于任何违规用途。
+
+## 反馈
+
+照着上面的「常见问题」和 GUI 帮助页排错仍解决不了时：到
+<https://github.com/xinghanzhuyue/github-/issues> 提 issue，附上「运行输出」的完整内容
+和 `logs\` 目录里最新一个日志文件，会更容易定位。
 
 ## 许可
 

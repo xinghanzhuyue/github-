@@ -38,7 +38,9 @@ $argList = @(
 )
 if ($Extra) { $argList += ($Extra -split '\s+') }
 
-Write-Host "正在以管理员身份启动：$Action ..." -ForegroundColor Cyan
+Write-Host "正在以管理员身份打开新窗口执行：$Action ..." -ForegroundColor Cyan
+Write-Host "（请留意稍后弹出的 UAC 确认框和新的蓝色窗口；本窗口随即自动关闭）" -ForegroundColor Gray
+Start-Sleep -Seconds 2
 try {
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList
 } catch {

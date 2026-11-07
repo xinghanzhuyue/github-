@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 IS_WINDOWS = os.name == "nt"
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -541,6 +541,12 @@ VERIFY_PATHS: Dict[str, str] = {
     "github.io": "/",
 }
 
+# 浏览器要真正打开页面的域名：HTTP 状态必须 < 400。
+# 4xx（典型是 400）说明该 IP 的前端根本不路由这个域名的网页流量——
+# 例如 github.com 落到 api.github.com 的 Azure 前端，TLS 握手能过（证书同属
+# *.github.com），但所有请求一律 400 Bad Request。这类 IP 绝不能写进 hosts。
+WEB_STRICT_HOSTS = {"github.com", "gist.github.com"}
+
 
 class _SniConnection(http.client.HTTPSConnection):
     """按指定 IP 连接，但 SNI 与 Host 都用域名（用于验证某个 IP 是否真的服务该域名）。"""
@@ -555,7 +561,12 @@ class _SniConnection(http.client.HTTPSConnection):
 
 
 def http_verify(ip: str, domain: str, timeout: float) -> Tuple[bool, int, float, str]:
-    """对选定 IP 做一次真实 HTTPS 请求，返回 (是否可用, 状态码, 毫秒, 错误)。"""
+    """对选定 IP 做一次真实 HTTPS 请求，返回 (是否可用, 状态码, 毫秒, 错误)。
+
+    判定：普通域名 status < 500 算可用（objects 等根路径本来就是 404）；
+    github.com / gist.github.com 这类浏览器域名必须 < 400——4xx 说明该前端
+    不路由网页流量（TLS 握手能过也没用，浏览器只会得到 400 页面）。
+    """
     path = VERIFY_PATHS.get(domain, "/")
     start = time.perf_counter()
     try:
@@ -565,7 +576,8 @@ def http_verify(ip: str, domain: str, timeout: float) -> Tuple[bool, int, float,
         resp.read(256)
         conn.close()
         ms = (time.perf_counter() - start) * 1000
-        return (resp.status < 500, resp.status, ms, "" if resp.status < 500 else f"HTTP {resp.status}")
+        ok = resp.status < (400 if domain in WEB_STRICT_HOSTS else 500)
+        return (ok, resp.status, ms, "" if ok else f"HTTP {resp.status}")
     except Exception as exc:
         ms = (time.perf_counter() - start) * 1000
         return False, 0, ms, f"{type(exc).__name__}: {exc}"[:70]
@@ -664,12 +676,26 @@ def optimize(entries: Sequence[Tuple[str, str]], args, log: Log,
                     break
             if chosen is None:
                 source_ok = next((p for p in good if p.ip == source_ip), None)
-                if source_ok is not None:
+                # 浏览器域名的兜底也要过 HTTP 闸：仅 TLS 通过的 IP 若是 API 前端，
+                # 写进 hosts 后浏览器只会得到 400，宁可保守回退源 IP。
+                def _web_gate(ip: str) -> bool:
+                    hres = http_results.get((domain, ip))
+                    return True if hres is None else bool(hres[0])
+                if source_ok is not None and _web_gate(source_ip):
                     chosen = (source_ok, "仅 TLS 通过，保守保留源 IP")
-                elif good:
+                elif good and _web_gate(good[0].ip):
                     chosen = (good[0], "仅 TLS 通过")
             if chosen is None:
                 why = probes[0].error if probes else "无候选"
+                if domain in WEB_STRICT_HOSTS and getattr(args, "http_verify", True):
+                    # 连源 IP 也不能盲留：数据源今天的 github.com 就可能恰巧是
+                    # 会回 400 的前端。宁缺毋滥——本轮跳过该域名，浏览器走系统 DNS，
+                    # 也好过钉一个所有网页请求都 400 的 IP。
+                    hres = http_verify(source_ip, domain, args.http_timeout)
+                    if not hres[0]:
+                        log.warn(f"{domain:<44} {source_ip:<16} 源 IP HTTP {hres[1]}，"
+                                 "该前端不路由网页流量——本轮跳过此域名")
+                        continue
                 choices.append(Choice(domain, source_ip, source_ip, None, False, "探测失败，保留源IP"))
                 log.warn(f"{domain:<44} {source_ip:<16} 探测失败，保留源 IP（{why}）")
             else:
@@ -685,7 +711,16 @@ def optimize(entries: Sequence[Tuple[str, str]], args, log: Log,
         if cand != source_ip:
             probe = probe_ip(cand, domain, args.probe_timeout)
             results[(domain, cand)] = probe
-            if probe.ok:
+            web_blocked = False
+            if probe.ok and domain in WEB_STRICT_HOSTS and getattr(args, "http_verify", True):
+                # 同族最优可能来自 api.github.com 的前端（对 api 是好的），
+                # 但浏览器域名继承它只会得到 400——先做 HTTP 校验再决定。
+                hres = http_verify(cand, domain, args.http_timeout)
+                web_blocked = not hres[0]
+                if web_blocked:
+                    log.warn(f"{domain:<44} {cand:<16} 同族最优 HTTP {hres[1]}，"
+                             "该前端不路由网页流量，改回源 IP")
+            if probe.ok and not web_blocked:
                 choices.append(Choice(domain, cand, source_ip, probe.ms, True, "同族最优"))
                 log.ok(f"{domain:<44} {cand:<16} {probe.ms:6.0f} ms  (同族最优)")
                 continue
@@ -1214,8 +1249,70 @@ def cmd_watch(args, log: Log) -> int:
 # 子命令：status / restore / task
 # --------------------------------------------------------------------------
 
+def cmd_verify(args, log: Log) -> int:
+    """轻量验证：hosts 加速条目是否被系统解析器真正采用（不需要管理员，几秒完成）。
+
+    退出码：0 = 生效；1 = 未生效（解析不一致 / 区块写反）；2 = 没有加速条目。
+    """
+    hosts_path = Path(args.hosts_file)
+    log.title("验证 hosts 生效情况")
+    if not hosts_path.is_file():
+        log.err(f"hosts 文件不存在：{hosts_path}")
+        return 2
+    text, _enc = read_hosts(hosts_path)
+    block = parse_block(text)
+    if not block.present:
+        log.warn("hosts 里还没有加速标记块（先运行 update 写入，或双击 一键更新hosts.cmd）。")
+        return 2
+    if block.swapped:
+        log.err(f"加速区块有 {block.swapped} 行写成了「域名 IP」顺序——Windows 只认「IP 域名」，"
+                "整段等于没生效，请重新运行 update 覆写。")
+        return 1
+
+    table = {d: ip for ip, d in block.entries}
+    domains = [d for d in KEY_DOMAINS if d in table] or list(table)[:6]
+    hit, miss, dead = 0, 0, 0
+    for domain in domains:
+        want = table[domain]
+        got = resolve_ipv4(domain)
+        if want in got:
+            hit += 1
+            log.ok(f"{domain:<44} -> {', '.join(got[:2]) or want}")
+        elif got:
+            miss += 1
+            log.warn(f"{domain:<44} 解析到 {', '.join(got[:2])}，hosts 写的是 {want}"
+                     "（解析器没按 hosts 返回：DNS 缓存 / 劫持 / 服务未重载）")
+        else:
+            dead += 1
+            log.err(f"{domain:<44} 解析失败（hosts 写的是 {want}）")
+
+    log.plain("")
+    if miss == 0 and dead == 0 and hit:
+        log.ok(f"系统解析已按 hosts 生效（{hit}/{len(domains)} 个关键域名一致）。")
+    else:
+        log.warn(f"只有 {hit}/{len(domains)} 个关键域名按 hosts 返回。"
+                 "可先试「重启 DNS 客户端服务」（GUI 系统工具里有）或重启系统后再验证。")
+
+    # 附带一次真实 HTTPS 探测：DNS 层生效不代表链路一定通（TLS 也可能被干扰）。
+    # 只提示、不影响退出码——退出码只对「hosts 有没有生效」负责。
+    try:
+        result = http_probe("https://github.com/", system_proxy_url(),
+                            timeout=min(args.timeout, 8.0))
+        if result.ok:
+            log.ok(f"github.com HTTPS 探测：HTTP {result.status}，{result.ms:.0f} ms")
+        else:
+            log.warn(f"github.com HTTPS 探测失败（{result.error}）：DNS 层已生效但连接仍被干扰，"
+                     "可重跑 update 换 IP，或改用代理方案（PowerShell 版 -Action proxy）。")
+    except Exception:
+        pass
+    if log.log_file:
+        log.info(f"日志：{log.log_file}")
+    return 0 if (hit and miss == 0 and dead == 0) else 1
+
+
 def cmd_status(args, log: Log) -> int:
     hosts_path = Path(args.hosts_file)
+    problem = False          # hosts 缺失 / 未启用 / 区块写反，都算「状态不健康」
     log.title("当前状态")
     log.info(f"hosts 文件：{hosts_path}")
     log.info("管理员权限：" + ("是" if is_admin() else "否"))
@@ -1225,6 +1322,7 @@ def cmd_status(args, log: Log) -> int:
         if block.present:
             log.ok(f"加速条目：{len(block.entries)} 条（生成于 {block.generated_at or '未知'}，编码 {enc}）")
             if block.swapped:
+                problem = True
                 log.err(f"其中 {block.swapped} 行写成了「域名 IP」顺序——Windows 要求「IP 域名」，"
                         "这些行等于没生效！请重新运行一次 update 覆写该区块。")
             for ip, domain in block.entries[:5]:
@@ -1232,8 +1330,10 @@ def cmd_status(args, log: Log) -> int:
             if len(block.entries) > 5:
                 log.plain(f"      ... 其余 {len(block.entries) - 5} 条")
         else:
-            log.info("加速条目：未启用")
+            problem = True
+            log.info("加速条目：未启用（可用 update / 一键更新hosts.cmd 写入）")
     else:
+        problem = True
         log.err("hosts 文件不存在。")
 
     log.title("备份")
@@ -1266,7 +1366,7 @@ def cmd_status(args, log: Log) -> int:
             log.err(f"  失败  {url}  ({type(exc).__name__})")
     if log.log_file:
         log.info(f"日志：{log.log_file}")
-    return 0
+    return 1 if problem else 0
 
 
 def cmd_restore(args, log: Log) -> int:
@@ -1364,6 +1464,7 @@ EXAMPLES = """\
   python github520.py watch --interval 1800     # 常驻，每 30 分钟自检并按需更新
   python github520.py task install --interval 3600   # 注册计划任务（每小时）
   python github520.py status                    # 查看状态 / 备份 / 计划任务
+  python github520.py verify                    # 快速验证 hosts 是否生效（几秒）
   python github520.py restore --list            # 列出备份
   python github520.py restore                   # 从最近备份还原
 """
@@ -1416,7 +1517,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--probe-timeout", type=float, default=3.0)
     w.add_argument("--keep-backups", type=int, default=10)
 
-    sub.add_parser("status", parents=[common], help="查看当前状态")
+    sub.add_parser("status", parents=[common], help="查看当前状态（hosts 未启用时退出码为 1）")
+    vf = sub.add_parser("verify", parents=[common],
+                        help="快速验证 hosts 加速条目是否生效（几秒；退出码 0=生效 1=未生效 2=无条目）")
 
     rs = sub.add_parser("restore", parents=[common], help="从备份还原 hosts")
     rs.add_argument("--list", action="store_true", help="只列出备份")
@@ -1459,6 +1562,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_watch(args, log)
     if command == "status":
         return cmd_status(args, log)
+    if command == "verify":
+        return cmd_verify(args, log)
     if command == "restore":
         if getattr(args, "elevate", False) and not is_admin():
             elevate_and_exit(sys.argv[1:], log)
