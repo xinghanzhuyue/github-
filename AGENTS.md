@@ -55,8 +55,10 @@ Agent 运行在文件沙箱里，`.git` 目录受保护，会出现两类必然�
 
 - **推送只走 `scripts\push-github.ps1`**。它用「带凭据的 URL + 显式 refspec」推送，
   不写本地 ref；输出和日志里的 token 一律脱敏成 `******`。
-- `git commit` / `git tag` / `git fetch` 同样会写 `.git`，沙箱里会失败。
+- `git commit` / `git tag` / `git fetch` 同样会写 `.git`，`workspace-write` 策略下会失败。
   需要提交时，请让用户在**非沙箱**终端里执行，或申请更宽的沙箱权限。
+  （若当前会话已经是 `danger-full-access` 策略，`.git` 可写，`git commit` 能直接跑；
+  推送脚本在两种策略下都适用。）
 - 不要临时改 `.git/config` 里的凭据助手，也不要把 token 塞进 remote URL 长期保存。
 
 ## 5. 参数
