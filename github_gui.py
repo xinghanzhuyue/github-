@@ -51,10 +51,19 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 APP_TITLE = "GitHub 加速控制台"
-APP_VERSION = "1.1.0"
-HERE = Path(__file__).resolve().parent
+APP_VERSION = "1.1.1"
+# 便携版（PyInstaller 打包后 sys.frozen 为真）：程序本体在 exe 旁的 app\ 里，
+# 日志/备份写 exe 旁的根目录；源码版则一切以脚本所在目录为准。
+FROZEN = getattr(sys, "frozen", False)
+if FROZEN:
+    HERE = Path(sys.executable).resolve().parent                 # 便携版根目录
+    RES_DIR = Path(getattr(sys, "_MEIPASS", str(HERE)))          # 内置程序目录（app\）
+else:
+    HERE = Path(__file__).resolve().parent
+    RES_DIR = HERE
 PY_SCRIPT = HERE / "github520.py"
-PS_SCRIPT = HERE / "github-accel.ps1"
+PS_SCRIPT = RES_DIR / "github-accel.ps1"
+CLI_EXE: Optional[Path] = RES_DIR / "gh520-cli.exe" if FROZEN else None
 HOSTS_PATH = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
 BACKUP_DIR = HERE / "backup"
 LOG_DIR = HERE / "logs"
@@ -256,11 +265,25 @@ def python_exe() -> str:
     return str(exe)
 
 
+def py_cli_ready() -> bool:
+    """Python 版 CLI 是否可用：源码版看 github520.py，便携版看内置的 gh520-cli.exe。"""
+    return CLI_EXE.is_file() if CLI_EXE is not None else PY_SCRIPT.is_file()
+
+
+def py_cli_argv(*extra: str) -> List[str]:
+    """Python 版 CLI 的启动命令：便携版直接跑内置 gh520-cli.exe，源码版跑 python github520.py。"""
+    if CLI_EXE is not None:
+        return [str(CLI_EXE), *extra]
+    return [python_exe(), "-u", str(PY_SCRIPT), *extra]
+
+
 def child_env() -> dict:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+    if CLI_EXE is not None:                  # 便携版：让内置 CLI 把日志/备份写到根目录
+        env["GH520_HOME"] = str(HERE)
     return env
 
 
@@ -308,8 +331,8 @@ GROUP_SYS = "系统工具"
 
 
 def build_tasks() -> List[Task]:
-    py = python_exe()
-    pyw = [py, "-u", str(PY_SCRIPT)]
+    pyw = py_cli_argv()
+    py_ok = py_cli_ready()
     g_py = GROUP_PY
     g_ps = GROUP_PS
     g_sys = GROUP_SYS
@@ -337,41 +360,41 @@ def build_tasks() -> List[Task]:
 
         Task("py_check", g_py, "① 体检：浏览器到 GitHub 连接状态",
              "浏览器/代理/DoH/hosts/DNS/连通性（不需要管理员）", [*pyw, "check"],
-             available=PY_SCRIPT.is_file()),
+             available=py_ok),
         Task("py_check_json", g_py, "① 体检（JSON 结果）",
-             "同上，附机器可读 JSON", [*pyw, "check", "--json"], available=PY_SCRIPT.is_file()),
+             "同上，附机器可读 JSON", [*pyw, "check", "--json"], available=py_ok),
         Task("py_update_dry", g_py, "② 预览更新（DryRun）",
              "只拉取+测速并显示将写入的 IP，不改系统", [*pyw, "update", "--dry-run"],
-             available=PY_SCRIPT.is_file()),
+             available=py_ok),
         Task("py_update", g_py, "③ 更新 hosts（推荐，自动测速）",
              "拉取 + DoH + TLS/HTTP 三层优选后写入 hosts", [*pyw, "update"],
-             needs_admin=True, available=PY_SCRIPT.is_file()),
+             needs_admin=True, available=py_ok),
         Task("py_update_fast", g_py, "③ 更新 hosts（快速，不测速）",
              "直接用 GitHub520 源里的 IP", [*pyw, "update", "--no-optimize"],
-             needs_admin=True, available=PY_SCRIPT.is_file()),
+             needs_admin=True, available=py_ok),
         Task("py_watch_once", g_py, "③ 检查并按需更新（等同计划任务）",
              "先体检，只在链路有问题时才更新", [*pyw, "watch", "--once"],
-             needs_admin=True, available=PY_SCRIPT.is_file()),
+             needs_admin=True, available=py_ok),
         Task("py_watch", g_py, "③ 常驻监控（每 30 分钟）",
              "持续运行，直到点「停止」（需管理员）", [*pyw, "watch", "--interval", "1800"],
-             needs_admin=True, long_running=True, available=PY_SCRIPT.is_file()),
+             needs_admin=True, long_running=True, available=py_ok),
         Task("py_status", g_py, "④ 查看状态",
              "加速条目 / 备份 / 计划任务 / 数据源可达性", [*pyw, "status"],
-             available=PY_SCRIPT.is_file()),
+             available=py_ok),
         Task("py_verify", g_py, "④ 快速验证 hosts 生效",
              "几秒完成：解析对比 + github.com 探测（CLI 里是 verify 命令）", [*pyw, "verify"],
-             available=PY_SCRIPT.is_file()),
+             available=py_ok),
         Task("py_backup_list", g_py, "④ 列出备份", "列出 backup 目录下的 hosts 备份",
-             [*pyw, "restore", "--list"], available=PY_SCRIPT.is_file()),
+             [*pyw, "restore", "--list"], available=py_ok),
         Task("py_restore", g_py, "④ 从备份还原 hosts", "用最近一次备份覆盖 hosts",
-             [*pyw, "restore"], needs_admin=True, available=PY_SCRIPT.is_file()),
+             [*pyw, "restore"], needs_admin=True, available=py_ok),
         Task("py_task_install", g_py, "⑤ 注册计划任务（每小时）",
              "开机后每小时自动更新 hosts", [*pyw, "task", "install"],
-             needs_admin=True, available=PY_SCRIPT.is_file()),
+             needs_admin=True, available=py_ok),
         Task("py_task_status", g_py, "⑤ 计划任务状态", "查询 GitHub520-HostsUpdate",
-             [*pyw, "task", "status"], available=PY_SCRIPT.is_file()),
+             [*pyw, "task", "status"], available=py_ok),
         Task("py_task_uninstall", g_py, "⑤ 删除计划任务", "卸载 GitHub520-HostsUpdate",
-             [*pyw, "task", "uninstall"], needs_admin=True, available=PY_SCRIPT.is_file()),
+             [*pyw, "task", "uninstall"], needs_admin=True, available=py_ok),
 
         ps_task("ps_diagnose", g_ps, "① 诊断：DNS/TCP/TLS/代理",
                 "分层诊断并给出结论", "-Action diagnose"),
@@ -1976,7 +1999,7 @@ class App(tk.Tk):
                 self.queue.put(("monitor_status", (f"监控中：异常（{short}）", "err")))
                 if fail_streak >= REPAIR_AFTER_ROUNDS and not incident_notified:
                     incident_notified = True
-                    if auto_repair and PY_SCRIPT.is_file():
+                    if auto_repair and py_cli_ready():
                         if time.time() - last_repair >= REPAIR_COOLDOWN:
                             last_repair = time.time()
                             self._auto_repair(stop_event)
@@ -2000,15 +2023,15 @@ class App(tk.Tk):
         """监控爆红后的自动修复：更新 hosts 换一批可用 IP（结果由监控继续探测验证）。"""
         self.queue.put(("monitor_status", ("自动修复中…", "accent")))
         self.queue.put(("line", "-> [自动修复] 尝试更新 hosts 换一批可用 IP…"))
-        if not PY_SCRIPT.is_file():
-            self.queue.put(("line", "[错误] [自动修复] 找不到 github520.py，无法自动修复。"))
+        if not py_cli_ready():
+            self.queue.put(("line", "[错误] [自动修复] 找不到 github520.py / 内置 CLI，无法自动修复。"))
             return
         if is_admin():
             # 已有管理员权限：直接跑 update，完整输出实时进「运行输出」
             self.queue.put(("line", "-> [自动修复] 当前已是管理员权限，直接执行更新："))
             try:
                 proc = subprocess.Popen(
-                    [python_exe(), "-u", str(PY_SCRIPT), "update", "--quiet"],
+                    py_cli_argv("update", "--quiet"),
                     cwd=str(HERE), env=child_env(),
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                     text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -2039,7 +2062,10 @@ class App(tk.Tk):
 
         # 非管理员：提权（弹 UAC）在新窗口里跑更新，完成后写标记文件，这里等它
         marker = LOG_DIR / f"repair-{int(time.time())}.done"
-        cmd = (f'"{python_exe()}" -u "{PY_SCRIPT}" update & echo done > "{marker}"')
+        if CLI_EXE is not None:
+            cmd = f'"{CLI_EXE}" update & echo done > "{marker}"'
+        else:
+            cmd = f'"{python_exe()}" -u "{PY_SCRIPT}" update & echo done > "{marker}"'
         try:
             rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe",
                                                      f"/c {cmd}", str(HERE), 1)
@@ -2348,11 +2374,13 @@ class App(tk.Tk):
         if is_admin():
             messagebox.showinfo(APP_TITLE, "当前已经是管理员权限。")
             return
-        script = str(Path(__file__).resolve())
-        params = f'"{script}"'
+        if FROZEN:
+            exe, params = str(sys.executable), ""    # 便携版：提权重启主程序自身
+        else:
+            exe, params = python_exe(), f'"{Path(__file__).resolve()}"'
         try:
             rc = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", python_exe(), params, str(HERE), 1)
+                None, "runas", exe, params, str(HERE), 1)
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"提权失败：{exc}")
             return
@@ -2489,6 +2517,11 @@ def _relaunch_windowless_if_needed() -> None:
 
 
 def main() -> int:
+    # 便携版隐藏通道：主程序是 windowed（无终端），计划任务/提权修复借它跑 CLI 子命令，
+    # 避免每小时弹一次控制台黑框。仅打包版生效；源码版行为完全不变。
+    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "__cli__":
+        import github520
+        return github520.main(sys.argv[2:])
     _relaunch_windowless_if_needed()
     enable_dpi_awareness()
     if "--flat" in sys.argv or os.environ.get("GITHUB_GUI_FLAT"):

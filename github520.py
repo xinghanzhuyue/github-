@@ -56,9 +56,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 IS_WINDOWS = os.name == "nt"
-SCRIPT_DIR = Path(__file__).resolve().parent
+# 打包版（frozen）：__file__ 指向临时解包目录，没有意义。GH520_HOME 由 GUI 主程序传入，
+# 指向便携版根目录；直接运行内置 CLI 时退回到 exe 所在目录。源码版不变。
+if getattr(sys, "frozen", False):
+    home = os.environ.get("GH520_HOME")
+    SCRIPT_DIR = Path(home) if home else Path(sys.executable).resolve().parent
+else:
+    SCRIPT_DIR = Path(__file__).resolve().parent
 
 # --------------------------------------------------------------------------
 # 常量
@@ -219,8 +225,11 @@ def elevate_and_exit(argv: Sequence[str], log: Log) -> None:
     if not IS_WINDOWS:
         log.err("当前系统不支持自动提权。")
         return
-    script = str(Path(__file__).resolve())
-    params = " ".join(f'"{a}"' if " " in a else a for a in [script, *argv])
+    if getattr(sys, "frozen", False):    # 打包版：exe 本身就是程序，参数原样重放
+        params = " ".join(f'"{a}"' if " " in a else a for a in argv)
+    else:
+        script = str(Path(__file__).resolve())
+        params = " ".join(f'"{a}"' if " " in a else a for a in [script, *argv])
     log.info("正在请求管理员权限（会弹出 UAC 窗口）...")
     try:
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
@@ -1375,13 +1384,19 @@ def cmd_restore(args, log: Log) -> int:
     backups = sorted(backup_dir.glob("hosts.*.bak")) if backup_dir.is_dir() else []
     if args.list:
         if not backups:
-            log.info("没有备份。")
+            log.info(f"在 {backup_dir} 未找到备份（识别 hosts.*.bak 命名）。")
+            log.info(f"update 默认把备份写到 {SCRIPT_DIR / 'backup'}；"
+                     "备份在其它目录时用 --backup-dir 指向它，单个备份文件用 --backup 指定。")
             return 0
         for b in backups:
             log.plain(f"  {b.name}  {b.stat().st_size} 字节")
         return 0
-    if not is_admin():
-        log.err("还原 hosts 需要管理员权限（可加 --elevate）。")
+    # 与 update 同一条规则：只有写系统默认 hosts 才需要管理员；
+    # --hosts-file 指向别的文件（沙箱测试 / 便携版）时直接还原那个文件。
+    needs_admin = os.path.normcase(str(hosts_path)) == os.path.normcase(str(DEFAULT_HOSTS))
+    if needs_admin and not is_admin():
+        log.err("还原系统 hosts 需要管理员权限（可加 --elevate）。")
+        log.info("（若指定了 --hosts-file 指向别的文件，则不需要管理员。）")
         return 1
     if args.backup:
         target = Path(args.backup)
@@ -1391,7 +1406,8 @@ def cmd_restore(args, log: Log) -> int:
     elif backups:
         target = backups[-1]
     else:
-        log.warn("没有备份，改为仅移除本脚本生成的区块。")
+        log.warn(f"在 {backup_dir} 未找到备份，改为仅移除本脚本生成的区块"
+                 "（如备份在别处：--backup-dir 指向该目录，或 --backup 指定备份文件）。")
         text, enc = read_hosts(hosts_path)
         backup_hosts(hosts_path, backup_dir, args.keep_backups, log)
         write_hosts(hosts_path, replace_block(text, None), enc)
@@ -1404,17 +1420,29 @@ def cmd_restore(args, log: Log) -> int:
     return 0
 
 
+def _scheduled_task_runner() -> str:
+    """计划任务 /TR 的宿主与脚本部分：源码版用 pythonw（无终端），打包版用主程序（windowed）。"""
+    if getattr(sys, "frozen", False):
+        home = os.environ.get("GH520_HOME")
+        root = Path(home) if home else Path(sys.executable).resolve().parent.parent
+        host = next((p for p in sorted(root.glob("*.exe"))
+                     if p.resolve() != Path(sys.executable).resolve()), None)
+        if host is not None:
+            return f'"{host}" __cli__'          # 主程序是无终端宿主，计划任务不会闪黑框
+        return f'"{sys.executable}"'            # 兜底：CLI 自身（控制台程序，执行时会闪终端）
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    exe = str(pythonw) if pythonw.is_file() else sys.executable
+    return f'"{exe}" "{Path(__file__).resolve()}"'
+
+
 def cmd_task(args, log: Log) -> int:
     if args.action == "status":
         rc, out = run_cmd(["schtasks", "/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"], timeout=20)
         log.plain(out if rc == 0 else f"{TASK_NAME} 未注册。")
         return 0 if rc == 0 else 1
     if args.action == "install" and args.dry_run:
-        script = str(Path(__file__).resolve())
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        exe = str(pythonw) if pythonw.is_file() else sys.executable
         hours = max(1, int(round(args.interval / 3600)))
-        tr = f'"{exe}" "{script}" update --quiet'
+        tr = _scheduled_task_runner() + " update --quiet"
         log.info("[DryRun] 将执行：schtasks /Create /TN " + TASK_NAME + " /SC HOURLY /MO "
                  + str(hours) + " /RL HIGHEST /F /TR " + tr)
         return 0
@@ -1429,11 +1457,8 @@ def cmd_task(args, log: Log) -> int:
         log.err(f"删除失败：{out.strip()}")
         return 1
 
-    script = str(Path(__file__).resolve())
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    exe = str(pythonw) if pythonw.is_file() else sys.executable
     hours = max(1, int(round(args.interval / 3600)))
-    tr = f'"{exe}" "{script}" update --quiet'
+    tr = _scheduled_task_runner() + " update --quiet"
     cmd = ["schtasks", "/Create", "/TN", TASK_NAME, "/SC", "HOURLY", "/MO", str(hours),
            "/RL", "HIGHEST", "/F", "/TR", tr]
     if args.dry_run:
@@ -1540,6 +1565,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if not args.command:
+        # 裸调用（无子命令，双击/直接回车最常见）：只打印用法，零副作用——
+        # 不创建日志目录、不写日志、不联网。原先回落执行 check 会因缺少
+        # check 专属参数（proxy/json）而 AttributeError，还会追加写日志。
+        parser.print_help()
+        return 2
+
     args.hosts_file = getattr(args, "hosts_file", None) or str(DEFAULT_HOSTS)
     args.backup_dir = getattr(args, "backup_dir", None) or str(SCRIPT_DIR / "backup")
     args.log_dir = getattr(args, "log_dir", None) or str(SCRIPT_DIR / "logs")
@@ -1551,7 +1583,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log = Log(Path(args.log_dir), quiet=getattr(args, "quiet", False),
               verbose=getattr(args, "verbose", False))
 
-    command = args.command or "check"
+    command = args.command
     log.step(f"github520.py {VERSION} | {command} | hosts={args.hosts_file}")
 
     if command == "check":

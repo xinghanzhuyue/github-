@@ -1,6 +1,8 @@
 # GitHub 访问加速脚本（Windows）
 
-**当前版本：v1.1.0** —— 图形界面、Python 版、PowerShell 版统一使用这一个版本号。
+**当前版本：v1.1.1** —— 图形界面、Python 版、PowerShell 版统一使用这一个版本号。
+
+> v1.1.1 变更：① 主程序内置便携版打包支持（PyInstaller 冻结模式：exe 旁的 app\ 目录 + `GH520_HOME` 环境变量统一日志/备份位置，打包后目标机无需 Python，源码模式行为零改动）；② 修复裸调用 `github520.py`（不带子命令）时因回落 check 而 AttributeError 崩溃的问题——现在只打印用法，零副作用；③ `restore` 找不到备份时的提示改为三要素：实际扫描目录 + 识别命名 + 补救指引（`--backup-dir` / `--backup`）；④ `restore` 与 `update` 统一管理员规则——只有写系统默认 hosts 才需要管理员，`--hosts-file` 指向别的文件时不再弹 UAC。
 
 两套实现 + 一个图形界面，功能互补，共用同一个 hosts 标记块，可以混用：
 

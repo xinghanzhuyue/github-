@@ -102,7 +102,7 @@ $ErrorActionPreference = 'Continue'
 # ---------------------------------------------------------------- 全局常量 ---
 
 if ($PSScriptRoot) { $Script:Root = $PSScriptRoot } else { $Script:Root = (Get-Location).Path }
-$Script:Version = '1.1.0'
+$Script:Version = '1.1.1'
 $Script:BackupDir = Join-Path $Script:Root 'backup'
 $Script:LogDir = Join-Path $Script:Root 'logs'
 $Script:LogFile = Join-Path $Script:LogDir ('accel-{0}.log' -f (Get-Date -Format 'yyyyMMdd'))
